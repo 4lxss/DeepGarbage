@@ -52,3 +52,36 @@ The script follows the Hugging Face `datasets.load_dataset(...)` flow. If your d
 ```bash
 python scripts/download_normalize_dataset.py --dataset username/my_dataset --label-column category
 ```
+
+## Train the MLP baseline
+
+`mlp_model.py` trains a simple MLP classifier as a first baseline model, using `torchvision.datasets.ImageFolder` to load images from a folder with one subfolder per class.
+
+The processed dataset in `data/processed/` is flat (images plus a CSV manifest), so it needs to be reorganized into a per-class folder layout before running the baseline:
+
+```bash
+python3 -c "
+import csv, json, shutil, os
+
+info = json.load(open('data/processed/dataset_info.json'))
+label_map = info['label_mapping']
+
+for name in label_map.values():
+    os.makedirs(f'data/imagefolder/{name}', exist_ok=True)
+
+with open('data/processed/train.csv') as f:
+    for row in csv.DictReader(f):
+        src = f\"data/processed/{row['path']}\"
+        cls = label_map[row['label']]
+        dst = f\"data/imagefolder/{cls}/{os.path.basename(row['path'])}\"
+        shutil.copy(src, dst)
+"
+```
+
+Then set `DATA_DIR` in `mlp_model.py` to `"./data/imagefolder"` and run:
+
+```bash
+python mlp_model.py
+```
+
+This prints the detected classes, the train/val image counts, the total parameter count, and per-epoch train/val loss and validation accuracy. The goal is only to confirm that the training loss decreases and the whole pipeline runs end to end, not to obtain a final model.
