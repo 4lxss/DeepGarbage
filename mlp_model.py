@@ -4,7 +4,7 @@ from torch.utils.data import DataLoader, random_split
 from torchvision import datasets
 from torchvision.transforms import Compose, Resize, ToTensor
 
-DATA_DIR = "./data"
+DATA_DIR = "./data/imagefolder"
 IMG_SIZE = 64
 NUM_CHANNELS = 3
 HIDDEN_SIZES = [512, 128]
