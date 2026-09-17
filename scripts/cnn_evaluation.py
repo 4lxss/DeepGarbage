@@ -63,6 +63,8 @@ def parse_args() -> argparse.Namespace:
                         help="Crée seulement le graphique baseline à partir du log d'Aless.")
     parser.add_argument("--test-only", action="store_true",
                         help="Réutilise les métriques train/validation déjà enregistrées et évalue seulement le test.")
+    parser.add_argument("--plot-summary-only", action="store_true",
+                        help="Crée les graphiques de synthèse à partir des résultats déjà calculés.")
     return parser.parse_args()
 
 
@@ -192,6 +194,40 @@ def plot_baseline_history(validation_loss: float, validation_accuracy: float) ->
     plt.close(figure)
 
 
+def plot_result_summary() -> None:
+    """Crée deux visuels de rapport sans relancer le modèle."""
+    metrics = pd.read_csv(OUTPUT_DIR / "baseline_metrics.csv")
+    per_class = pd.read_csv(OUTPUT_DIR / "test_metrics_per_class.csv")
+
+    figure, axes = plt.subplots(1, 2, figsize=(11, 4))
+    splits = metrics["split"]
+    axes[0].bar(splits, metrics["accuracy"], color="#4c78a8")
+    axes[0].set(title="Accuracy par jeu", ylabel="Accuracy", ylim=(0, 1))
+    axes[1].bar(splits, metrics["loss"], color="#f58518")
+    axes[1].set(title="Loss par jeu", ylabel="Loss")
+    for axis, values in zip(axes, (metrics["accuracy"], metrics["loss"])):
+        for index, value in enumerate(values):
+            axis.text(index, value, f"{value:.3f}", ha="center", va="bottom")
+        axis.grid(axis="y", alpha=0.25)
+    figure.tight_layout()
+    figure.savefig(OUTPUT_DIR / "performance_by_split.png", dpi=180)
+    plt.close(figure)
+
+    positions = np.arange(len(per_class))
+    width = 0.25
+    figure, axis = plt.subplots(figsize=(10, 5))
+    axis.bar(positions - width, per_class["precision"], width, label="Précision")
+    axis.bar(positions, per_class["recall"], width, label="Rappel")
+    axis.bar(positions + width, per_class["f1"], width, label="F1")
+    axis.set(xticks=positions, xticklabels=per_class["class"], ylim=(0, 1),
+             ylabel="Score", title="Métriques par classe — test")
+    axis.legend()
+    axis.grid(axis="y", alpha=0.25)
+    figure.tight_layout()
+    figure.savefig(OUTPUT_DIR / "metrics_by_class.png", dpi=180)
+    plt.close(figure)
+
+
 def main() -> None:
     args = parse_args()
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -202,6 +238,10 @@ def main() -> None:
         metrics = pd.read_csv(metrics_file).set_index("split")
         plot_baseline_history(metrics.loc["validation", "loss"], metrics.loc["validation", "accuracy"])
         print(f"Graphique créé : {OUTPUT_DIR / 'baseline_learning_curves.png'}")
+        return
+    if args.plot_summary_only:
+        plot_result_summary()
+        print(f"Graphiques créés dans : {OUTPUT_DIR}")
         return
     if args.test_only and not args.final_test:
         raise ValueError("--test-only doit être utilisé avec --final-test.")
