@@ -1,42 +1,91 @@
 import os
+import glob
 import pandas as pd
 import tensorflow as tf
+from sklearn.model_selection import train_test_split
 from tensorflow.keras import layers, models
 from tensorflow.keras.callbacks import ReduceLROnPlateau, EarlyStopping
 
 # ==========================================
-# 1. PARAMÈTRES RÉDUITS POUR PC PORTABLE (128x128)
+# 1. PARAMÈTRES
 # ==========================================
-IMAGE_SIZE = (128, 128)  # <--- Taille réduite (au lieu de 224x224)
+IMAGE_SIZE = (224, 224)
 BATCH_SIZE = 32
 NUM_CLASSES = 6
-BASE_DIR = "data/processed"
+SORTED_DIR = "data/sorted"  # Dossier contenant cardboard, glass, metal, etc.
+OUTPUT_DIR = "data/processed"
 
-def load_dataset_from_csv(csv_path):
-    df = pd.read_csv(csv_path)
-    file_paths = [os.path.join(BASE_DIR, p) for p in df['path']]
-    labels = df['label'].values
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+# Correspondance des dossier aux indices (0 à 5)
+CLASS_NAMES = ['cardboard', 'glass', 'metal', 'paper', 'plastic', 'trash']
+LABEL_MAP = {name: i for i, name in enumerate(CLASS_NAMES)}
+
+# ==========================================
+# 2. PRÉPARATION DU SPLIT (70% TRAIN / 30% VAL)
+# ==========================================
+all_paths = []
+all_labels = []
+
+# Scan des dossiers
+for class_name in CLASS_NAMES:
+    class_dir = os.path.join(SORTED_DIR, class_name)
+    if not os.path.exists(class_dir):
+        continue
+    
+    # Récupérer toutes les images jpg/png/jpeg
+    images = []
+    for ext in ['*.jpg', '*.jpeg', '*.png']:
+        images.extend(glob.glob(os.path.join(class_dir, ext)))
+        
+    for img_path in images:
+        all_paths.append(img_path)
+        all_labels.append(LABEL_MAP[class_name])
+
+df = pd.DataFrame({'path': all_paths, 'label': all_labels})
+
+# Séparation 70% Train - 30% Val (avec stratification pour garder l'équilibre des classes)
+train_df, val_df = train_test_split(
+    df, 
+    test_size=0.30, 
+    random_state=42, 
+    stratify=df['label']
+)
+
+# Sauvegarde des fichiers CSV
+train_csv_path = os.path.join(OUTPUT_DIR, "train.csv")
+val_csv_path = os.path.join(OUTPUT_DIR, "val.csv")
+
+train_df.to_csv(train_csv_path, index=False)
+val_df.to_csv(val_csv_path, index=False)
+
+print(f"Dataset divisé : {len(train_df)} images d'entraînement (70%), {len(val_df)} images d'évaluation (30%).")
+
+# ==========================================
+# 3. CHARGEMENT DU DATASET TENSORFLOW
+# ==========================================
+def load_dataset_from_df(dataframe):
+    file_paths = dataframe['path'].values
+    labels = dataframe['label'].values
     
     ds = tf.data.Dataset.from_tensor_slices((file_paths, labels))
     
     def process_path(file_path, label):
         img = tf.io.read_file(file_path)
         img = tf.image.decode_jpeg(img, channels=3)
-        img = tf.image.resize(img, IMAGE_SIZE)  # Redimensionnement rapide en 128x128
+        img = tf.image.resize(img, IMAGE_SIZE)  # 224x224
         img = tf.cast(img, tf.float32) / 255.0
         return img, label
 
     ds = ds.map(process_path, num_parallel_calls=tf.data.AUTOTUNE)
-    
-    # Mise en cache dans la RAM pour accélérer les époques suivantes
-    ds = ds.cache()
+    # Retrait de .cache() pour économiser la RAM avec 224x224
     ds = ds.shuffle(buffer_size=1000).batch(BATCH_SIZE).prefetch(buffer_size=tf.data.AUTOTUNE)
     return ds
 
-train_ds = load_dataset_from_csv("data/processed/train.csv")
+train_ds = load_dataset_from_df(train_df)
 
 # ==========================================
-# 2. DATA AUGMENTATION
+# 4. ARCHITECTURE ET ENTRAÎNEMENT
 # ==========================================
 data_augmentation = tf.keras.Sequential([
     layers.RandomFlip("horizontal_and_vertical"),
@@ -44,32 +93,26 @@ data_augmentation = tf.keras.Sequential([
     layers.RandomZoom(0.2),
 ], name="data_augmentation")
 
-# ==========================================
-# 3. ARCHITECTURE ADAPTÉE À 128x128x3
-# ==========================================
-def build_fast_cnn():
+def build_cnn():
     model = models.Sequential([
+        layers.Input(shape=(224, 224, 3)),  # Forme Keras 3 propre en 224x224
         data_augmentation,
         
-        # Bloc 1 (Entrée en 128x128x3)
-        layers.Conv2D(32, (3, 3), padding='same', input_shape=(128, 128, 3)),
+        layers.Conv2D(32, (3, 3), padding='same'),
         layers.BatchNormalization(),
         layers.Activation('relu'),
         layers.MaxPooling2D((2, 2)),
         
-        # Bloc 2
         layers.Conv2D(64, (3, 3), padding='same'),
         layers.BatchNormalization(),
         layers.Activation('relu'),
         layers.MaxPooling2D((2, 2)),
         
-        # Bloc 3
         layers.Conv2D(128, (3, 3), padding='same'),
         layers.BatchNormalization(),
         layers.Activation('relu'),
         layers.MaxPooling2D((2, 2)),
 
-        # Classification
         layers.GlobalAveragePooling2D(),
         layers.Dense(128, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(1e-4)),
         layers.Dropout(0.4),
@@ -77,11 +120,8 @@ def build_fast_cnn():
     ])
     return model
 
-model = build_fast_cnn()
+model = build_cnn()
 
-# ==========================================
-# 4. OPTIMISEUR & CALLBACKS
-# ==========================================
 model.compile(
     optimizer=tf.keras.optimizers.Adam(learning_rate=1e-3),
     loss=tf.keras.losses.SparseCategoricalCrossentropy(),
@@ -93,18 +133,12 @@ callbacks = [
     EarlyStopping(monitor='loss', patience=7, restore_best_weights=True, verbose=1)
 ]
 
-# ==========================================
-# 5. ENTRAÎNEMENT
-# ==========================================
-EPOCHS = 25
+# Entraînement
 history = model.fit(
     train_ds,
-    epochs=EPOCHS,
+    epochs=25,
     callbacks=callbacks
 )
 
-# ==========================================
-# 6. SAUVEGARDE
-# ==========================================
 model.save('cnn_model.keras')
-print("Modèle entraîné en 128x128 et sauvegardé !")
+print("Modèle entraîné et sauvegardé avec succès !")
