@@ -4,21 +4,27 @@
   "label_column": "label",
   "image_size": 224,
   "splits": {
-    "train": 2527
+    "train": 24916
   },
   "skipped": {
     "train": 1
   },
+  "source_counts": {
+    "train": {
+      "huggingface_trashnet": 2527,
+      "kaggle_garbage_classification_v2": 22389
+    }
+  },
   "normalization": {
     "mean": [
-      0.673219,
-      0.639923,
-      0.604938
+      0.640131,
+      0.620373,
+      0.590287
     ],
     "std": [
-      0.20608,
-      0.207092,
-      0.22922
+      0.254043,
+      0.251851,
+      0.271845
     ]
   },
   "dataset": "garythung/trashnet",
