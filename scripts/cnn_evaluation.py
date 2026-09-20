@@ -1,16 +1,4 @@
-"""Partie Lysa : évaluation du CNN de référence d'Aless.
 
-Aless a entraîné ``cnn_model.keras`` sur ``data/processed/train.csv`` (70 %).
-Les images de ``val.csv`` (30 %, jamais vues par le modèle) sont réparties ici
-en validation et test de manière stratifiée : 15 % / 15 % du dataset complet.
-
-Usage :
-    ./.venv/bin/python scripts/cnn_evaluation.py
-    ./.venv/bin/python scripts/cnn_evaluation.py --final-test
-
-Sans ``--final-test``, seules les métriques train/validation sont calculées.
-Le test est volontairement réservé à l'évaluation finale du modèle retenu.
-"""
 
 from __future__ import annotations
 

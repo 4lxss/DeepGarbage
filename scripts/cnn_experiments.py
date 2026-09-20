@@ -1,9 +1,4 @@
-"""Partie Lysa : expériences contrôlées à partir du CNN d'Aless.
 
-Chaque variante conserve le dataset, les 25 époques et l'architecture de
-référence. Un seul paramètre change à la fois : learning rate, capacité ou L2.
-Le jeu de test n'est jamais chargé dans ce script.
-"""
 
 from __future__ import annotations
 
