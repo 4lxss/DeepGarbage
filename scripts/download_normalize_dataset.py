@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from collections import Counter
 from pathlib import Path
 from typing import Any
 from zipfile import ZipFile
@@ -16,7 +17,8 @@ from zipfile import ZipFile
 try:
     import numpy as np
     import pandas as pd
-    from datasets import ClassLabel, Dataset, DatasetDict, Features, Image, load_dataset
+    import kagglehub
+    from datasets import ClassLabel, Dataset, DatasetDict, Features, Image, Value, concatenate_datasets, load_dataset
     from datasets.exceptions import DatasetGenerationError
     from huggingface_hub import hf_hub_download
     from PIL import Image as PILImage
@@ -34,7 +36,13 @@ except ModuleNotFoundError as error:
 
 
 TRASHNET_DATASET_ID = "garythung/trashnet"
+KAGGLE_DATASET_ID = "sumn2u/garbage-classification-v2"
 TRASHNET_CLASSES = ["cardboard", "glass", "metal", "paper", "plastic", "trash"]
+KAGGLE_CLASS_ALIASES = {
+    "brown-glass": "glass",
+    "green-glass": "glass",
+    "white-glass": "glass",
+}
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 
 
@@ -53,6 +61,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--label-column", default=None, help="Label column name. Auto-detected when omitted.")
     parser.add_argument("--image-size", type=int, default=224, help="Square image size for image datasets.")
     parser.add_argument("--max-rows-per-split", type=int, default=None, help="Optional limit for quick experiments.")
+    parser.add_argument(
+        "--include-kaggle",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=f"Merge filtered images from Kaggle dataset '{KAGGLE_DATASET_ID}'.",
+    )
     return parser.parse_args()
 
 
@@ -81,6 +95,30 @@ def path_class_name(path: str) -> str | None:
     return None
 
 
+def normalized_part(value: str) -> str:
+    return value.lower().strip().replace("_", "-").replace(" ", "-")
+
+
+def kaggle_class_name(path: Path) -> str | None:
+    for part in reversed(path.parts[:-1]):
+        normalized = normalized_part(part)
+        if normalized in KAGGLE_CLASS_ALIASES:
+            return KAGGLE_CLASS_ALIASES[normalized]
+        if normalized in TRASHNET_CLASSES:
+            return normalized
+    return None
+
+
+def image_features() -> Features:
+    return Features(
+        {
+            "image": Image(),
+            "label": ClassLabel(names=TRASHNET_CLASSES),
+            "source": Value("string"),
+        }
+    )
+
+
 def load_trashnet_from_zip(cache_dir: str) -> DatasetDict:
     zip_path = hf_hub_download(
         repo_id=TRASHNET_DATASET_ID,
@@ -89,7 +127,7 @@ def load_trashnet_from_zip(cache_dir: str) -> DatasetDict:
         cache_dir=cache_dir,
     )
 
-    records = {"image": [], "label": []}
+    records = {"image": [], "label": [], "source": []}
     with ZipFile(zip_path) as archive:
         for member in archive.namelist():
             suffix = Path(member).suffix.lower()
@@ -98,17 +136,49 @@ def load_trashnet_from_zip(cache_dir: str) -> DatasetDict:
                 continue
             records["image"].append(f"zip://{member}::{zip_path}")
             records["label"].append(TRASHNET_CLASSES.index(class_name))
+            records["source"].append("huggingface_trashnet")
 
     if not records["image"]:
         raise RuntimeError(f"No TrashNet images were found in {zip_path}")
 
-    features = Features(
-        {
-            "image": Image(),
-            "label": ClassLabel(names=TRASHNET_CLASSES),
-        }
-    )
-    return DatasetDict({"train": Dataset.from_dict(records, features=features)})
+    return DatasetDict({"train": Dataset.from_dict(records, features=image_features())})
+
+
+def load_kaggle_filtered_dataset() -> DatasetDict:
+    root = Path(kagglehub.dataset_download(KAGGLE_DATASET_ID))
+    records = {"image": [], "label": [], "source": []}
+
+    for image_path in root.rglob("*"):
+        if not image_path.is_file() or image_path.suffix.lower() not in IMAGE_EXTENSIONS:
+            continue
+
+        class_name = kaggle_class_name(image_path)
+        if not class_name:
+            continue
+
+        records["image"].append(str(image_path))
+        records["label"].append(TRASHNET_CLASSES.index(class_name))
+        records["source"].append("kaggle_garbage_classification_v2")
+
+    if not records["image"]:
+        raise RuntimeError(f"No matching Kaggle images were found under {root}")
+
+    return DatasetDict({"train": Dataset.from_dict(records, features=image_features())})
+
+
+def merge_image_datasets(base: DatasetDict, extra: DatasetDict) -> DatasetDict:
+    merged: dict[str, Dataset] = {}
+    for split, base_part in base.items():
+        if split in extra:
+            merged[split] = concatenate_datasets([base_part, extra[split]])
+        else:
+            merged[split] = base_part
+
+    for split, extra_part in extra.items():
+        if split not in merged:
+            merged[split] = extra_part
+
+    return DatasetDict(merged)
 
 
 def load_hf_dataset(dataset_id: str, config: str | None, cache_dir: str) -> Dataset | DatasetDict:
@@ -198,12 +268,14 @@ def export_image_dataset(
     pixel_count = 0
     manifests: dict[str, int] = {}
     skipped: dict[str, int] = {}
+    source_counts: dict[str, dict[str, int]] = {}
 
     for split, part in dataset.items():
         split_dir = images_dir / split
         split_dir.mkdir(parents=True, exist_ok=True)
         rows: list[dict[str, Any]] = []
         skipped[split] = 0
+        split_sources: Counter[str] = Counter()
 
         for idx in range(len(part)):
             try:
@@ -226,6 +298,9 @@ def export_image_dataset(
                 row = {"path": rel_path.as_posix()}
                 if label_column:
                     row["label"] = example[label_column]
+                if "source" in example:
+                    row["source"] = example["source"]
+                    split_sources.update([example["source"]])
                 rows.append(row)
             except Exception as error:
                 skipped[split] += 1
@@ -234,6 +309,7 @@ def export_image_dataset(
         manifest_path = output_dir / f"{split}.csv"
         pd.DataFrame(rows).to_csv(manifest_path, index=False)
         manifests[split] = len(rows)
+        source_counts[split] = dict(sorted(split_sources.items()))
 
     mean = channel_sum / max(pixel_count, 1)
     std = np.sqrt((channel_sq_sum / max(pixel_count, 1)) - np.square(mean))
@@ -245,6 +321,7 @@ def export_image_dataset(
         "image_size": image_size,
         "splits": manifests,
         "skipped": skipped,
+        "source_counts": source_counts,
         "normalization": {
             "mean": mean.round(6).tolist(),
             "std": std.round(6).tolist(),
@@ -308,6 +385,10 @@ def main() -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     dataset = load_hf_dataset(args.dataset, args.config, args.cache_dir)
+    if args.include_kaggle:
+        kaggle_dataset = load_kaggle_filtered_dataset()
+        dataset = merge_image_datasets(dataset_to_dict(dataset), kaggle_dataset)
+
     dataset_dict = limit_rows(dataset_to_dict(dataset), args.max_rows_per_split)
     first_split = next(iter(dataset_dict.values()))
     label_column = detect_label_column(first_split, args.label_column)
