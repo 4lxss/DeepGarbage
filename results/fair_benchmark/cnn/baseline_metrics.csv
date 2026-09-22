@@ -1,0 +1,2 @@
+configuration,learning_rate,batch_size,l2,epochs_ran,validation_loss,validation_accuracy
+baseline,0.001,32,0.0001,30,0.9698703289031982,0.6535475254058838
