@@ -1,0 +1,9 @@
+{
+  "model": "CNN (architecture Aless)",
+  "configuration": "baseline",
+  "test_loss": 0.9930817484855652,
+  "test_accuracy": 0.6479551196098328,
+  "precision_macro": 0.6507403696866421,
+  "recall_macro": 0.6246098695043536,
+  "f1_macro": 0.6329620533677107
+}
